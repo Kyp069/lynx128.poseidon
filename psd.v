@@ -7,8 +7,8 @@ module psd
 
 	output wire[ 2:0] led,
 
-	output wire[ 1:0] sync,
 	output wire[17:0] rgb,
+	output wire[ 1:0] sync,
 
 	input  wire       ear,
 
@@ -52,7 +52,7 @@ module psd
 
 	wire pe1M5 = ce[4:0] == 15;
 
-//--- mist ----------------------------------------------------------------------------------------
+//--- video ---------------------------------------------------------------------------------------
 
 	wire r;
 	wire g;
@@ -60,11 +60,40 @@ module psd
 	wire hsync;
 	wire vsync;
 
-	wire ps2kCk;
-	wire ps2kD;
+//--- audio ---------------------------------------------------------------------------------------
+
+	wire[5:0] sound;
+	wire[15:0] mix = { 4'd0, sound, 4'd0 }+{ 4'd0, {12{ tape && status[4] }} };
+
+	i2s i2s(clock50, mix, mix, i2sCk, i2sWs, i2sQ);
+
+//--- keyboard ------------------------------------------------------------------------------------
+
+	wire      ps2kCk;
+	wire      ps2kD;
+	wire      strb;
+	wire[7:0] code;
+
+	ps2k ps2k(clock, ps2kCk, ps2kD, strb, code);
+
+	wire[3:0] row;
+	wire[7:0] col;
+	wire F9, play, stop, break;
+
+	matrix matrix(clock, strb, code, row, col, F9, play, stop, break);
+
+//--- mist ----------------------------------------------------------------------------------------
+
+	wire       ready;
+	wire[63:0] status;
 
 	wire[ 7:0] joy0;
 	wire[ 7:0] joy1;
+
+	wire       dioE;
+	wire[26:0] dioA;
+	wire[ 7:0] dioD;
+	wire       dioW;
 
 	wire[ 1:0] fdcA;
 	wire[ 7:0] fdcD;
@@ -74,22 +103,25 @@ module psd
 	wire       fdcSel;
 	wire       fdcSide;
 
-	wire       romIo;
-	wire       tzxIo;
-	wire[31:0] dioSz;
-	wire[26:0] dioA;
-	wire[ 7:0] dioD;
-	wire       dioW;
+	wire tzxEar;
+	wire tzxBusy;
+	wire motor;
 
-	wire[63:0] status;
-
-	mist mist
+	mist #(.RGBW(6)) mist
 	(
 		.clock  (clock  ),
 		.pe24M  (pe24M  ),
 		.pe12M  (pe12M  ),
 		.pe6M0  (pe6M0  ),
 		.reset  (reset  ),
+		.spiCk  (spiCk  ),
+		.spiSs1 (spiSs1 ),
+		.spiSs2 (spiSs2 ),
+		.spiSs3 (spiSs3 ),
+		.spiMosi(spiMosi),
+		.spiMiso(spiMiso),
+		.ready  (ready  ),
+		.status (status ),
 		.r      (r      ),
 		.g      (g      ),
 		.b      (b      ),
@@ -101,6 +133,10 @@ module psd
 		.ps2kD  (ps2kD  ),
 		.joy0   (joy0   ),
 		.joy1   (joy1   ),
+		.dioE   (dioE   ),
+		.dioA   (dioA   ),
+		.dioD   (dioD   ),
+		.dioW   (dioW   ),
 		.fdcA   (fdcA   ),
 		.fdcD   (fdcD   ),
 		.fdcQ   (fdcQ   ),
@@ -108,27 +144,12 @@ module psd
 		.fdcW   (fdcW   ),
 		.fdcSel (fdcSel ),
 		.fdcSide(fdcSide),
-		.romIo  (romIo  ),
-		.tzxIo  (tzxIo  ),
-		.dioSz  (dioSz  ),
-		.dioA   (dioA   ),
-		.dioD   (dioD   ),
-		.dioW   (dioW   ),
-		.status (status ),
-		.spiCk  (spiCk  ),
-		.spiSs1 (spiSs1 ),
-		.spiSs2 (spiSs2 ),
-		.spiSs3 (spiSs3 ),
-		.spiMosi(spiMosi),
-		.spiMiso(spiMiso)
+		.tzxEar (tzxEar ),
+		.tzxBusy(tzxBusy),
+		.tzxPlay(~play  ),
+		.tzxStop(~stop  ),
+		.tzxMotor(motor )
 	);
-
-//--- audio ---------------------------------------------------------------------------------------
-
-	wire[5:0] sound;
-	wire[15:0] mix = { 4'd0, sound, 4'd0 }+{ 4'd0, {12{ tape && status[4] }} };
-
-	i2s i2s(clock50, mix, mix, i2sCk, i2sWs, i2sQ);
 
 //--- memory --------------------------------------------------------------------------------------
 
@@ -165,10 +186,6 @@ module psd
 			3'd7: romP = 2'd3; // xdos
 			default: romP = 2'd3;
 		endcase
-
-	// romm #(32, "../rom/lynx128-84.mif") rom(clock, { romP, mem0A[12:0] }, mem0Q);
-	// ram #(64) mem1(clock, mem1A, mem1D, mem1Q, mem1W);
-	// ram #(64) mem4(clock, mem4A, mem4D, mem4Q, mem4W);
 	
 	dprf #(64) mem2
 	(
@@ -184,17 +201,16 @@ module psd
 		.w2     (mem2W2 )
 	);
 
-	wire       ready;
-	wire[23:0] sdrA  = { 6'd0, romIo ? { 2'd0, dioA[15:0] } : mem0R ? { 2'd0, romP, mem0A[12:0]} : mem1R || mem1W ? { 2'd1, mem1A } : { 2'd2, mem4A } };
-	wire[15:0] sdrD =  { 8'hFF, romIo ? dioD : mem1W ? mem1D : mem4D };
+	wire[23:0] sdrA  = { 6'd0, dioE ? { 2'd0, dioA[15:0] } : mem0R ? { 2'd0, romP, mem0A[12:0]} : mem1R || mem1W ? { 2'd1, mem1A } : { 2'd2, mem4A } };
+	wire[15:0] sdrD =  { 8'hFF, dioE ? dioD : mem1W ? mem1D : mem4D };
 	wire[15:0] sdrQ;
 	wire       sdrR = mem0R || mem1R || mem4R;
-	wire       sdrW = romIo ? dioW : mem1W || mem4W;
+	wire       sdrW = dioE ? dioW : mem1W || mem4W;
 
 	sdram sdram
 	(
 		.clock  (clock  ),
-		.ready  (ready  ),
+		.ready  (       ),
 		.reset  (power  ),
 		.rfsh   (rfsh   ),
 		.a      (sdrA   ),
@@ -215,54 +231,12 @@ module psd
 
 	assign dramCk = clock;
 
-//--- keyboard ------------------------------------------------------------------------------------
-
-	wire      strb;
-	wire[7:0] code;
-
-	ps2k ps2k(clock, ps2kCk, ps2kD, strb, code);
-
-	wire[3:0] row;
-	wire[7:0] col;
-	wire F9, play, stop;
-
-	matrix matrix(clock, strb, code, row, col, F9, play, stop);
-
-//--- tzx -----------------------------------------------------------------------------------------
-
-	localparam TK = 512;
-	localparam TW = $clog2(TK*1024);
-
-	reg[TW-1:0] tzxSize;
-	always @(posedge clock) if(tzxIo) tzxSize <= dioSz[TW-1:0];
-
-	wire[TW-1:0] tzxA;
-	wire[7:0] tzxQ;
-
-	ram #(TK) ram(clock, tzxIo ? dioA[TW-1:0] : tzxA, dioD, tzxQ, tzxIo && dioW);
-
-	wire tzxBusy;
-	wire tzxTape;
-
-	tzx #(48000, TW) tzx
-	(
-		.clock  (clock  ),
-		.ce     (1'b1   ),
-		.a      (tzxA   ),
-		.d      (tzxQ   ),
-		.play   (!play  ),
-		.stop   (!stop  ),
-		.busy   (tzxBusy),
-		.size   (tzxSize),
-		.tape   (tzxTape)
-	);
-
 //--- lynx -----------------------------------------------------------------------------------------
 
 	wire reset = power && ready && F9 && !status[0];
 	wire rfsh;
 
-	wire tape = tzxBusy ? tzxTape : ~ear;
+	wire tape = tzxBusy ? tzxEar : ~ear;
 
 	lynx lynx
 	(
@@ -276,12 +250,13 @@ module psd
 		.r      (r      ),
 		.g      (g      ),
 		.b      (b      ),
+		.blank  (       ),
 		.hsync  (hsync  ),
 		.vsync  (vsync  ),
-		.tape   (tape   ),
 		.sound  (sound  ),
 		.row    (row    ),
 		.col    (col    ),
+		.break  (break  ),
 		.joy0   (joy0   ),
 		.joy1   (joy1   ),
 		.mem0A  (mem0A  ),
@@ -303,6 +278,8 @@ module psd
 		.mem4Q  (mem4Q  ),
 		.mem4R  (mem4R  ),
 		.mem4W  (mem4W  ),
+		.tape   (tape   ),
+		.motor  (motor  ),
 		.fdcA   (fdcA   ),
 		.fdcD   (fdcD   ),
 		.fdcQ   (fdcQ   ),
